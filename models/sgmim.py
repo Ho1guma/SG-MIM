@@ -6,7 +6,10 @@
 # --------------------------------------------------------
 
 from functools import partial
-
+from MinkowskiEngine import (
+    MinkowskiConvolution
+)
+from MinkowskiEngine.MinkowskiOps import MinkowskiLinear
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,9 +20,10 @@ from .swin_transformer import PatchEmbed
 from .swin_transformer import PatchMerging
 from .swin_transformer import SwinTransformer
 from .vision_transformer import VisionTransformer
+from .resnetv2_sparse import SparseResNet, BasicBlock, Bottleneck
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, context_dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -27,8 +31,8 @@ class CrossAttention(nn.Module):
         self.scale = qk_scale or head_dim ** -0.5
 
         self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        self.k = nn.Linear(context_dim, dim, bias=qkv_bias)
+        self.v = nn.Linear(context_dim, dim, bias=qkv_bias)
 
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -36,7 +40,7 @@ class CrossAttention(nn.Module):
 
     def forward(self, x, context):
         B, N, C = x.shape
-        _, N_context, _ = context.shape
+        _, N_context,_  = context.shape
 
         q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3) #x(64,36,1024)->q(64,8,36,128)
         k = self.k(context).reshape(B, N_context, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
@@ -84,10 +88,10 @@ class MlpDepth(nn.Module):
 
         return x
 class Fusion_blk(nn.Module):
-    def __init__(self, embed_dim,mlp_ratio,norm_layer=nn.LayerNorm):
+    def __init__(self, embed_dim, context_dim, mlp_ratio,norm_layer=nn.LayerNorm):
         super().__init__()
-        self.cross_attn = CrossAttention(embed_dim)
-        self.context_norm = norm_layer(embed_dim)
+        self.cross_attn = CrossAttention(embed_dim, context_dim)
+        self.context_norm = norm_layer(context_dim)
         self.query_norm = norm_layer(embed_dim)
         self.out_norm = norm_layer(embed_dim)
         self.mlp = MlpDepth(in_features=embed_dim, hidden_features=int(embed_dim * mlp_ratio), act_layer=nn.GELU, drop=0.)
@@ -199,8 +203,9 @@ class SGMIM(nn.Module):
         super().__init__()
         self.encoder = encoder
         self.encoder_stride = encoder_stride
-        self.depth_encoder = Depth_Encoder()
-        self.fusion_blk_img = Fusion_blk(1024, 4, nn.LayerNorm)
+        #self.depth_encoder = Depth_Encoder()
+        self.depth_encoder_sparse = SparseResNet(BasicBlock, [2, 2, 2, 2])
+        self.fusion_blk_img = Fusion_blk(1024,512, 4, nn.LayerNorm)
         #self.fusion_blk_dep = Fusion_blk(1024, 4, nn.LayerNorm)
         self.img_decoder = nn.Sequential(
             nn.Conv2d(
@@ -217,6 +222,24 @@ class SGMIM(nn.Module):
 
         self.in_chans = self.encoder.in_chans
         self.patch_size = self.encoder.patch_size
+        self.apply(self._init_weights_resnet)
+
+    def _init_weights_resnet(self, m):
+        if isinstance(m, MinkowskiConvolution):
+            trunc_normal_(m.kernel, std=.02)
+            # nn.init.constant_(m.bias, 0)
+        if isinstance(m, MinkowskiLinear):
+            trunc_normal_(m.linear.weight)
+            nn.init.constant_(m.linear.bias, 0)
+        if isinstance(m, nn.Conv2d):
+            w = m.weight.data
+            trunc_normal_(w.view([w.shape[0], -1]))
+            # nn.init.constant_(m.bias, 0)
+        if isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        # if hasattr(self, 'depth_mask_token'):
+        #     torch.nn.init.normal_(self.depth_mask_token, std=.02)
 
 
     def reshape_to_patch(self, x):
@@ -229,7 +252,7 @@ class SGMIM(nn.Module):
 
     def forward(self, x,y, mask):
         z = self.encoder(x, mask)
-        z_depth = self.depth_encoder(y, mask)
+        z_depth = self.depth_encoder_sparse(y, mask)
 
         fused_img = self.fusion_blk_img(z, z_depth)
         img_f = self.reshape_to_patch(z)
