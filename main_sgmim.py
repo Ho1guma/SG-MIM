@@ -127,8 +127,6 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     norm_meter = AverageMeter()
-    img_meter = AverageMeter()
-    depth_meter = AverageMeter()
 
     start = time.time()
     end = time.time()
@@ -140,7 +138,7 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
         trunc_depth = trunc_depth[:, int(0.1 * trunc_depth.shape[1]): int(0.9 * trunc_depth.shape[1])]
         depth = (depth - trunc_depth.mean(dim=1)[:, None, None, None]) / torch.sqrt(
             trunc_depth.var(dim=1)[:, None, None, None] + 1e-6)
-        loss,image_loss, depth_loss = model(img, depth, mask)
+        loss= model(img, depth, mask)
 
         if config.TRAIN.ACCUMULATION_STEPS > 1:
             loss = loss / config.TRAIN.ACCUMULATION_STEPS
@@ -183,8 +181,6 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
 
         loss_meter.update(loss.item(), img.size(0))
         norm_meter.update(grad_norm)
-        img_meter.update(image_loss)
-        depth_meter.update(depth_loss)
         batch_time.update(time.time() - end)
         end = time.time()
 
@@ -197,8 +193,6 @@ def train_one_epoch(config, model, data_loader, optimizer, epoch, lr_scheduler):
                 f'eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t'
                 f'time {batch_time.val:.4f} ({batch_time.avg:.4f})\t'
                 f'loss {loss_meter.val:.4f} ({loss_meter.avg:.4f})\t'
-                f'imgloss {img_meter.val:.4f} ({img_meter.avg:.4f})\t'
-                f'deploss {depth_meter.val:.4f} ({depth_meter.avg:.4f})\t'
                 f'grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t'
                 f'mem {memory_used:.0f}MB')
     epoch_time = time.time() - start

@@ -96,31 +96,42 @@ class Fusion_blk(nn.Module):
         self.out_norm = norm_layer(embed_dim)
         self.mlp = MlpDepth(in_features=embed_dim, hidden_features=int(embed_dim * mlp_ratio), act_layer=nn.GELU, drop=0.)
     def forward(self, x, context):
-        x = x + self.cross_attn(self.query_norm(x), self.context_norm(context))
+        B, N_context, C = context.shape
+        context_mask = (context.abs().sum(dim=-1) > 0)  # Shape: (B, N)
+
+        # Flatten context and mask to apply masked_select
+        context_flat = context.reshape(-1, C)  # Shape: (B * N, C)
+        mask_flat = context_mask.reshape(-1)  # Shape: (B * N)
+
+        # Select only valid sequences
+        filtered_context = context_flat[mask_flat]  # Shape: (valid_count, C)
+        filtered_context = filtered_context.reshape(B,-1,C)
+
+        x = x + self.cross_attn(self.query_norm(x), self.context_norm(filtered_context))
         x = x + self.mlp(self.out_norm(x))
 
         return x
 
-class Depth_Encoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        ##Patch merging 구현하기
-        self.patch_merging_1 = PatchMerging((48, 48), dim=128, norm_layer=nn.LayerNorm)
-        self.patch_merging_2 = PatchMerging((24, 24), dim=256, norm_layer=nn.LayerNorm)
-        self.patch_merging_3 = PatchMerging((12, 12), dim=512, norm_layer=nn.LayerNorm)
-        self.depth_patch_embed = PatchEmbed(
-            img_size=192, patch_size=4, in_chans=1, embed_dim=128,
-            norm_layer=nn.LayerNorm)
-
-    def forward(self, y, mask):
-        y = self.depth_patch_embed(y) #(b, 2304, 128)
-        w = mask.flatten(1).unsqueeze(-1).type_as(y)
-        y = y * w
-        y = self.patch_merging_1(y)
-        y = self.patch_merging_2(y)
-        y = self.patch_merging_3(y)
-
-        return y
+# class Depth_Encoder(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         ##Patch merging 구현하기
+#         self.patch_merging_1 = PatchMerging((48, 48), dim=128, norm_layer=nn.LayerNorm)
+#         self.patch_merging_2 = PatchMerging((24, 24), dim=256, norm_layer=nn.LayerNorm)
+#         self.patch_merging_3 = PatchMerging((12, 12), dim=512, norm_layer=nn.LayerNorm)
+#         self.depth_patch_embed = PatchEmbed(
+#             img_size=192, patch_size=4, in_chans=1, embed_dim=128,
+#             norm_layer=nn.LayerNorm)
+#
+#     def forward(self, y, mask):
+#         y = self.depth_patch_embed(y) #(b, 2304, 128)
+#         w = mask.flatten(1).unsqueeze(-1).type_as(y)
+#         y = y * w
+#         y = self.patch_merging_1(y)
+#         y = self.patch_merging_2(y)
+#         y = self.patch_merging_3(y)
+#
+#         return y
 
 class SwinTransformerForSGMIM(SwinTransformer):
     def __init__(self, **kwargs):
@@ -129,9 +140,6 @@ class SwinTransformerForSGMIM(SwinTransformer):
         assert self.num_classes == 0
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
-        self.depth_patch_embed = PatchEmbed(
-            img_size=192, patch_size=4, in_chans=1, embed_dim=128,
-            norm_layer=nn.LayerNorm)
         trunc_normal_(self.mask_token, mean=0., std=.02)
 
     def forward(self, x, mask):
@@ -222,24 +230,22 @@ class SGMIM(nn.Module):
 
         self.in_chans = self.encoder.in_chans
         self.patch_size = self.encoder.patch_size
-        self.apply(self._init_weights_resnet)
+        # self.apply(self._init_weights_resnet)
 
-    def _init_weights_resnet(self, m):
-        if isinstance(m, MinkowskiConvolution):
-            trunc_normal_(m.kernel, std=.02)
-            # nn.init.constant_(m.bias, 0)
-        if isinstance(m, MinkowskiLinear):
-            trunc_normal_(m.linear.weight)
-            nn.init.constant_(m.linear.bias, 0)
-        if isinstance(m, nn.Conv2d):
-            w = m.weight.data
-            trunc_normal_(w.view([w.shape[0], -1]))
-            # nn.init.constant_(m.bias, 0)
-        if isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-        # if hasattr(self, 'depth_mask_token'):
-        #     torch.nn.init.normal_(self.depth_mask_token, std=.02)
+    # def _init_weights_resnet(self, m):
+    #     if isinstance(m, MinkowskiConvolution):
+    #         trunc_normal_(m.kernel, std=.02)
+    #         # nn.init.constant_(m.bias, 0)
+    #     if isinstance(m, MinkowskiLinear):
+    #         trunc_normal_(m.linear.weight)
+    #         nn.init.constant_(m.linear.bias, 0)
+    #     if isinstance(m, nn.Conv2d):
+    #         w = m.weight.data
+    #         trunc_normal_(w.view([w.shape[0], -1]))
+    #         # nn.init.constant_(m.bias, 0)
+    #     if isinstance(m, nn.LayerNorm):
+    #         nn.init.constant_(m.bias, 0)
+    #         nn.init.constant_(m.weight, 1.0)
 
 
     def reshape_to_patch(self, x):
@@ -267,7 +273,7 @@ class SGMIM(nn.Module):
         img_loss_recon = (img_loss_recon * mask).sum() / (mask.sum() + 1e-5) / self.in_chans
         dep_loss_recon = (dep_loss_recon * exclusive_mask).sum() / (exclusive_mask.sum() + 1e-5)
         loss = img_loss_recon+dep_loss_recon
-        return loss, img_loss_recon, dep_loss_recon
+        return loss
 
     @torch.jit.ignore
     def no_weight_decay(self):

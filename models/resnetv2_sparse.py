@@ -12,7 +12,7 @@ from MinkowskiEngine import (
 from MinkowskiOps import (
     to_sparse,
 )
-
+from timm.models.layers import trunc_normal_
 
 class BasicBlock(nn.Module):
     """ Sparse Basic Block.
@@ -109,6 +109,21 @@ class SparseResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+
+        self.apply(self._init_weights_resnet)
+
+    def _init_weights_resnet(self, m):
+        if isinstance(m, MinkowskiConvolution):
+            trunc_normal_(m.kernel, std=.02)
+            #nn.init.constant_(m.bias, 0)
+        if isinstance(m, nn.Conv2d):
+            w = m.weight.data
+            trunc_normal_(w.view([w.shape[0], -1]))
+            nn.init.constant_(m.bias, 0)
+        if isinstance(m, nn.LayerNorm):
+            #nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
 
     def _make_layer(self, block, out_channels, blocks, stride=1, D=2):
         downsample = None
