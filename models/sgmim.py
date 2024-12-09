@@ -95,10 +95,13 @@ class Fusion_blk(nn.Module):
         self.query_norm = norm_layer(embed_dim)
         self.out_norm = norm_layer(embed_dim)
         self.mlp = MlpDepth(in_features=embed_dim, hidden_features=int(embed_dim * mlp_ratio), act_layer=nn.GELU, drop=0.)
+        self.absolute_pos_embed = nn.Parameter(torch.zeros(1, 36, 1024))
+        trunc_normal_(self.absolute_pos_embed, std=.02)
     def forward(self, x, context):
-        B, N_context, C = context.shape
         context_mask = (context.abs().sum(dim=-1) > 0)  # Shape: (B, N)
-
+        context = context+self.absolute_pos_embed
+        x = x+self.absolute_pos_embed
+        B, N_context, C = context.shape
         # Flatten context and mask to apply masked_select
         context_flat = context.reshape(-1, C)  # Shape: (B * N, C)
         mask_flat = context_mask.reshape(-1)  # Shape: (B * N)
@@ -213,7 +216,7 @@ class SGMIM(nn.Module):
         self.encoder_stride = encoder_stride
         #self.depth_encoder = Depth_Encoder()
         self.depth_encoder_sparse = SparseResNet(BasicBlock, [2, 2, 2, 2])
-        self.fusion_blk_img = Fusion_blk(1024,512, 4, nn.LayerNorm)
+        self.fusion_blk_img = Fusion_blk(1024,1024, 4, nn.LayerNorm)
         #self.fusion_blk_dep = Fusion_blk(1024, 4, nn.LayerNorm)
         self.img_decoder = nn.Sequential(
             nn.Conv2d(
